@@ -1,0 +1,379 @@
+import java.sql.*;
+import java.util.ArrayList;
+
+public class Cleanser {
+	public static String edit = null;
+
+	public static void main(String[] args) throws SQLException {
+		// Fields Declared
+		String database = "UnifiedDatabase4";
+		String username = "sa";
+		String password = "group5";
+
+		// Connection Process
+		JdbcConnection m_Conn = new JdbcConnection(database, username, password);
+		Connection conn = m_Conn.getConn();
+		//
+		cleaner(conn);
+		System.out.println("Cleaning iteration complete.");
+
+	}
+
+	public static ArrayList<String> listTables(Connection conn) throws SQLException {
+		ArrayList<String> tables = new ArrayList<String>();
+		DatabaseMetaData md = conn.getMetaData();
+		ResultSet rs = md.getTables(null, null, "%", null);
+		while (rs.next()) {
+			if (rs.getString(3).contains("trace_xe")) { // first element produced that is not a table
+				break;
+			}
+			tables.add(rs.getString(3));
+		}
+		return tables;
+	}
+
+	public static void cleaner(Connection conn) throws SQLException {
+		ArrayList<String> tables;
+		ArrayList<String> insTables;
+		ArrayList<String> indTables;
+
+		String insTable;
+		String mainTable;
+		String tempTable = "";
+		int counter = -1;
+
+		// retrieving tables
+		tables = listTables(conn);// gets all tables
+		insTables = insertTables(tables); // gets insert tables followed by table it inserts to
+		//
+		for (int z = 0; z < insTables.size(); z++) {
+
+			insTable = insTables.get(z);
+			mainTable = insTables.get(++z);
+			Statement statement;
+			String tempTable2;
+
+			String selectTableSQL = "SELECT * from " + insTable;
+			ArrayList<String> query = null;
+			ArrayList<String> query2 = null;
+			ArrayList<String> query3 = null;
+			ArrayList<String> columns = new ArrayList<String>();
+			ArrayList<String> columns2 = new ArrayList<String>();
+			ArrayList<Integer> foreign = getForeignIndex(insTable, conn, tables);
+
+			statement = conn.createStatement();
+
+			System.out.println(selectTableSQL);
+
+			// execute select SQL stetement
+			ResultSet rs = statement.executeQuery(selectTableSQL);
+			//
+			ArrayList<String> compare = null;
+			ResultSetMetaData rsmd2 = rs.getMetaData();
+			int columnsNumber = rsmd2.getColumnCount();
+			while (rs.next()) {
+				edit = null;
+				try {
+					String result;
+					query = new ArrayList<String>();
+					query3 = new ArrayList<String>();
+					columns = new ArrayList<String>();
+					counter = -1;
+					for (int i = 1; i <= columnsNumber; i++) {
+						columns.add(rsmd2.getColumnName(i));
+					}
+					for (int i = 0; i <= columnsNumber; i++) {
+						columns2 = new ArrayList<String>();
+						query2 = new ArrayList<String>();
+						if (i > 0) {
+							result = rs.getString(i);
+							if (result != null) {
+								result = result.replaceAll("'", "''");
+							}
+
+							if (edit != null) {
+								query.set(query.size() - 1, edit);
+								edit = null;
+							}
+							query.add(result);
+							query3.add(result);
+
+							if (foreign.contains(counter)) {
+								counter++;
+								tempTable2 = columns.get(counter - 1);
+								columns2.add(columns.get(counter - 1));
+								columns2.add(columns.get(counter));
+
+								query2.add(result);
+								i++;
+								result = rs.getString(i);
+								if (result != null) {
+									result = result.replaceAll("'", "''");
+								}
+								query2.add(result);
+								manipulateDatabase(compare, conn, rs, query2, query2, columns2, insTable, tempTable2, 1,
+										foreign);
+							}
+
+						}
+						counter++;
+					}
+				} catch (SQLException e) {
+
+					System.out.println(e.getMessage());
+
+				} finally {
+				}
+				counter++;
+				manipulateDatabase(compare, conn, rs, query, query3, columns, insTable, mainTable, 0, foreign);
+			}
+		}
+
+	}
+
+	public static void manipulateDatabase(ArrayList<String> compare, Connection conn, ResultSet rs,
+			ArrayList<String> query, ArrayList<String> query3, ArrayList<String> columns, String insTable,
+			String mainTable, int delete, ArrayList<Integer> foreign) throws SQLException {
+		ArrayList<String> indCol = new ArrayList<String>();
+
+		if (delete == 0) {
+			if (query.get(0) != null) {
+				PreparedStatement std = conn
+						.prepareStatement(delete(adjustQuerySize(columns, foreign), query3, insTable));
+				std.executeUpdate();
+			}
+		}
+		Statement stmt3 = conn.createStatement();
+		ResultSet rs3 = stmt3.executeQuery("SELECT * FROM " + mainTable);
+		ResultSetMetaData rsmd3 = rs3.getMetaData();
+		int columnCount2 = rsmd3.getColumnCount();
+
+		// The column count starts from 1
+		for (int i = 1; i <= columnCount2; i++) {
+			indCol.add(rsmd3.getColumnName(i));
+			// Do stuff with name
+		}
+		if (delete == 0) {
+			for (int i = 0; i < columns.size(); i++) {
+				if (!indCol.contains(columns.get(i))) {
+					columns.remove(i);
+					i--;
+
+				}
+			}
+		}
+		if (query.get(0) == null) {
+			StringAdjustment fix = new StringAdjustment(query.get(1));
+			query.set(0, fix.getID());
+			query.set(1, fix.getName());
+			if (fix.getID() != null) {
+				edit = fix.getID();
+			}
+		}
+
+		compare = mainTable(insTable, columns.get(1), query.get(1), conn, mainTable, query.get(0), columns.get(0));
+
+		Statement stmt2 = conn.createStatement();
+		if (query.get(0) != null) {
+			if (compare == null) {
+				stmt2.executeUpdate(insert(query, columns, mainTable, columns.get(0), columns));
+			} else {
+				compare = completeQuery(compare, query);
+				stmt2.executeUpdate(update(compare, columns, mainTable, columns.get(0), columns));
+
+			}
+		}
+		if (delete == 0) {
+			System.out.println("\n");
+		}
+	}
+
+	public static ArrayList<String> adjustQuerySize(ArrayList<String> query, ArrayList<Integer> foreign) {
+		if (query == null || query.size() == 0) {
+			return query;
+		} else {
+			for (int i = foreign.size() - 1; i >= 0; i--) {
+				query.remove(foreign.get(i) + 1);
+			}
+			return query;
+		}
+	}
+
+	public static ArrayList<Integer> getForeignIndex(String insTable, Connection conn, ArrayList<String> tables)
+			throws SQLException {
+		ArrayList<Integer> foreign = new ArrayList<Integer>();
+		Statement stmt = conn.createStatement();
+		ResultSet rs = stmt.executeQuery("SELECT * FROM " + insTable);
+		ResultSetMetaData rsmd = rs.getMetaData();
+		int columnCount = rsmd.getColumnCount();
+
+		// The column count starts from 1
+		for (int i = 1; i <= columnCount; i++) {
+
+			String name = rsmd.getColumnName(i);
+			for (int k = 0; k < tables.size(); k++) {
+				if (name.equals(tables.get(k))) {
+					foreign.add(i - 1);
+				}
+			}
+		}
+
+		return foreign;
+	}
+
+	private static String helpMain(String main) {
+		if (main == null) {
+			return "";
+		}
+		return main;
+	}
+
+	private static ArrayList<String> mainTable(String insTable, String col2, String ID2, Connection conn, String Table,
+			String ID, String Column) throws SQLException {
+		Statement statement = null;
+		ArrayList<String> query = null;
+
+		String selectTableSQL = "SELECT * from " + Table + " WHERE " + Column + " = '" + ID + "'";
+		// if (insTable.equals("Ins_Independent")) {
+		// selectTableSQL += " AND " + col2 + " = '" + ID2 + "'";
+		// }
+
+		// try {
+
+		statement = conn.createStatement();
+
+		System.out.println(selectTableSQL);
+
+		// execute select SQL stetement
+		ResultSet rs = statement.executeQuery(selectTableSQL);
+		//
+		ResultSetMetaData rsmd = rs.getMetaData();
+		int columnsNumber = rsmd.getColumnCount();
+
+		if (rs.next()) {
+			query = new ArrayList<String>();
+			for (int i = 0; i <= columnsNumber; i++) {
+				if (i > 0) {
+
+					if (rs.getString(i) == null) {
+						query.add("");
+					} else {
+						query.add(helpMain(rs.getString(i).replaceAll("'", "''")));
+					}
+				}
+			}
+
+		}
+
+		// } catch (SQLException e) {
+
+		// System.out.println(e.getMessage());
+
+		// } finally {
+		return query;
+
+		// }
+	}
+
+	// gets all insert tables and the tables they insert to
+	public static ArrayList<String> insertTables(ArrayList<String> tables) {
+		ArrayList<String> insTable = new ArrayList<String>();
+		for (int i = 0; i < tables.size(); i++) {
+			if (tables.get(i).startsWith("Ins_")) {
+				insTable.add(tables.get(i));
+				insTable.add(tables.get(i).substring(4, tables.get(i).length()));
+			}
+		}
+		return insTable;
+	}
+
+	public static ArrayList<String> completeQuery(ArrayList<String> dom, ArrayList<String> rec) {
+
+		if (dom == null || dom.contains("null")) {
+			return rec;
+		}
+		for (int i = 0; i < dom.size(); i++) {
+			if (rec.get(i) != null && (dom.get(i) == null || dom.get(i).length() == 0 || dom.get(i).equals("null")
+					|| rec.get(i).contains(dom.get(i)))) {
+				dom.set(i, rec.get(i));
+			}
+		}
+		return dom;
+	}
+
+	public static String insert(ArrayList<String> query, ArrayList<String> coll, String table, String col,
+			ArrayList<String> allCol) {
+		String insertS;
+
+		String column = "";
+
+		insertS = "INSERT INTO " + table + " (";
+		for (int i = 0; i < allCol.size(); i++) {
+			column += allCol.get(i) + ", ";
+		}
+		insertS += column.substring(0, column.length() - 2) + ") VALUES (";
+		for (int i = 0; i < query.size(); i++) {
+			insertS += "'" + query.get(i) + "', ";
+		}
+		insertS = insertS.substring(0, insertS.length() - 2) + ")";
+
+		while (insertS.contains("'null'")) {
+			insertS = insertS.replace("'null'", "NULL");
+
+		}
+
+		System.out.println(insertS);
+		return insertS;
+	}
+
+	public static String update(ArrayList<String> query, ArrayList<String> coll, String table, String col,
+			ArrayList<String> allCol) {
+		String insertS;
+		String insertS2 = "";
+		String column = "";
+
+		insertS = "UPDATE " + table + " SET ";
+		for (int i = 0; i < query.size(); i++) {
+			insertS += coll.get(i) + " = '" + query.get(i) + "', ";
+
+		}
+
+		insertS = insertS.substring(0, insertS.length() - 2);
+
+		insertS += " WHERE " + col + " = '" + query.get(0) + "'";
+		while (insertS.contains("'null'")) {
+			insertS = insertS.replace("= 'null'", "= NULL");
+
+		}
+		while (insertS.contains("= ''")) {
+			insertS = insertS.replace("= ''", "= NULL");
+
+		}
+
+		System.out.println(insertS);
+		return insertS;
+	}
+
+	public static String delete(ArrayList<String> columns, ArrayList<String> values, String table) {
+		String deleteS;
+		deleteS = "DELETE FROM " + table + " WHERE ";
+		for (int i = 0; i < columns.size(); i++) {
+			if (i > 0) {
+				deleteS += " AND ";
+			}
+			deleteS += "" + columns.get(i) + " = '" + values.get(i) + "'";
+		}
+
+		while (deleteS.contains("'null'")) {
+			deleteS = deleteS.replace("= 'null'", "IS NULL");
+
+		}
+		while (deleteS.contains("\"")) {
+			deleteS = deleteS.replace("\"", "IS NULL");
+
+		}
+		System.out.println(deleteS);
+		return deleteS;
+	}
+
+}
